@@ -1,0 +1,67 @@
+{
+  "missingness": {
+    "gender": 0,
+    "race_ethnicity": 0,
+    "parental_education": 0,
+    "lunch": 0,
+    "test_preparation": 0,
+    "math_score": 0,
+    "reading_score": 0,
+    "writing_score": 0
+  },
+  "stats": {
+    "math_score": {
+      "count": 1000,
+      "mean": null,
+      "std": null,
+      "min": "0",
+      "q1": "28",
+      "median": "53",
+      "q3": "7572",
+      "max": "7572",
+      "skew": null,
+      "kurtosis": null
+    },
+    "reading_score": {
+      "count": 1000,
+      "mean": null,
+      "std": null,
+      "min": "0",
+      "q1": "26",
+      "median": "51",
+      "q3": "7475",
+      "max": "7475",
+      "skew": null,
+      "kurtosis": null
+    },
+    "writing_score": {
+      "count": 1000,
+      "mean": null,
+      "std": null,
+      "min": "0",
+      "q1": "26",
+      "median": "54",
+      "q3": "7778",
+      "max": "7778",
+      "skew": null,
+      "kurtosis": null
+    }
+  },
+  "corr": {
+    "math_score": {
+      "math_score": 0,
+      "reading_score": 0,
+      "writing_score": 0
+    },
+    "reading_score": {
+      "math_score": 0,
+      "reading_score": 0,
+      "writing_score": 0
+    },
+    "writing_score": {
+      "math_score": 0,
+      "reading_score": 0,
+      "writing_score": 0
+    }
+  }
+}
