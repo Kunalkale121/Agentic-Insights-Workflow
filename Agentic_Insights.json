@@ -1,0 +1,594 @@
+{
+  "name": "Agentic Insights",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "085eacfe-7c9d-4b3b-9c8d-0b0af648f97d",
+      "name": "Manual Trigger"
+    },
+    {
+      "parameters": {
+        "fileSelector": "/home/n8n/agentic-insights/data/StudentsPerformance.csv",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        -80,
+        288
+      ],
+      "id": "0e3ec31b-55f1-4373-a168-4b88a7c2fdb5",
+      "name": "Read Raw CSV (Binary)",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "jsCode": "// CLEANING AGENT v2 — with before/after tracking + logs\n\nfunction median(a){ const x=a.filter(v=>v!=null).sort((a,b)=>a-b); if(!x.length) return null; const m=Math.floor(x.length/2); return x.length%2?x[m]:(x[m-1]+x[m])/2; }\nfunction mode(a){ const m=new Map(); for (const v of a){ if(v!=null) m.set(v,(m.get(v)||0)+1);} let best=null,b=-1; for (const[k,c] of m){ if(c>b){best=k;b=c;} } return best; }\nfunction iqrCap(a){ const x=a.filter(v=>v!=null).sort((a,b)=>a-b); if(x.length<4) return {low:null,high:null}; const q1=x[Math.floor(0.25*(x.length-1))], q3=x[Math.floor(0.75*(x.length-1))], iqr=q3-q1; return {low:q1-1.5*iqr, high:q3+1.5*iqr}; }\n\nif (!items || !items.length) throw new Error(\"Cleaning: no input from Schema Detector.\");\n\nconst rows = items[0].json.__rows;\nconst schema = items[0].json.__schema;\n\n// ---- BEFORE STATS ----\nconst beforeStats = {};\nfor (const [c,t] of Object.entries(schema)) {\n  if (t === 'numeric') {\n    const col = rows.map(r => r[c]).filter(v => v != null);\n    beforeStats[c] = {\n      min: Math.min(...col),\n      max: Math.max(...col),\n      median: median(col)\n    };\n  }\n}\n\nconst cleaning = [];\nconst imp = {}, caps = {};\n\n// imputers\nfor (const [c,t] of Object.entries(schema)) {\n  const col = rows.map(r=>r[c]);\n  if (t==='numeric') imp[c] = {type:'median', value:median(col)};\n  else if (t==='categorical') imp[c] = {type:'mode', value:mode(col)};\n}\n\n// caps\nfor (const [c,t] of Object.entries(schema)) {\n  if (t==='numeric') { const col=rows.map(r=>r[c]).filter(v=>v!=null); caps[c]=iqrCap(col); }\n}\n\n// apply imputers + caps\nfor (const r of rows) {\n  for (const [c,t] of Object.entries(schema)) {\n    if ((r[c]===''||r[c]==null) && imp[c]) r[c]=imp[c].value;\n    if (t==='numeric' && caps[c] && caps[c].low!=null) {\n      if (r[c] < caps[c].low) r[c]=caps[c].low;\n      if (r[c] > caps[c].high) r[c]=caps[c].high;\n    }\n  }\n}\n\n// log\nfor (const [c,t] of Object.entries(schema)) {\n  if (imp[c]) cleaning.push({column:c, imputer:imp[c].type, value:imp[c].value});\n  if (t==='numeric' && caps[c]) cleaning.push({column:c, outlierCap:caps[c]});\n}\n\n// ---- AFTER STATS ----\nconst afterStats = {};\nfor (const [c,t] of Object.entries(schema)) {\n  if (t === 'numeric') {\n    const col = rows.map(r => r[c]).filter(v => v != null);\n    afterStats[c] = {\n      min: Math.min(...col),\n      max: Math.max(...col),\n      median: median(col)\n    };\n  }\n}\n\nreturn [{\n  json: {\n    __rows: rows,\n    __schema: schema,\n    __cleaningLog: cleaning,\n    __cleaningBefore: beforeStats,\n    __cleaningAfter: afterStats\n  }\n}];\n\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        768,
+        288
+      ],
+      "id": "7d1fe0b8-1029-443d-8ef7-05705d904c0c",
+      "name": "Agent: Data Cleaning"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Exploratory Data Analysis Agent\n\nfunction stats(a){\n  a = a.filter(v => v != null);\n  if (!a.length) return null;\n\n  const n = a.length;\n  const mean = a.reduce((s,x)=>s+x,0) / n;\n  const variance = a.reduce((s,x)=>s+(x-mean)**2,0) / (n-1 || 1);\n  const sd = Math.sqrt(variance);\n\n  const x = a.slice().sort((a,b)=>a-b);\n  const q = p => x[Math.floor(p * (x.length - 1))];\n\n  const m3 = a.reduce((s,x)=>s+(x-mean)**3,0) / n;\n  const m4 = a.reduce((s,x)=>s+(x-mean)**4,0) / n;\n\n  return {\n    count: n,\n    mean,\n    std: sd,\n    min: x[0],\n    q1: q(0.25),\n    median: q(0.5),\n    q3: q(0.75),\n    max: x[x.length - 1],\n    skew: (m3 / (sd**3 || 1)),\n    kurtosis: (m4 / (sd**4 || 1))\n  };\n}\n\nfunction pearson(x,y){\n  const a = [], b = [];\n  for (let i=0;i<x.length;i++){\n    const xv = x[i], yv = y[i];\n    if (xv != null && yv != null) {\n      a.push(xv); b.push(yv);\n    }\n  }\n  const n = a.length;\n  if (n < 3) return 0;\n\n  const mx = a.reduce((s,v)=>s+v,0)/n;\n  const my = b.reduce((s,v)=>s+v,0)/n;\n\n  let num=0,dx=0,dy=0;\n  for (let i=0;i<n;i++){\n    const xv = a[i]-mx, yv = b[i]-my;\n    num += xv*yv;\n    dx  += xv*xv;\n    dy  += yv*yv;\n  }\n  return num / Math.sqrt(dx * dy) || 0;\n}\n\n// ------------------- MAIN -------------------\n\nif (!items || !items.length)\n  throw new Error(\"EDA: no input from Cleaning.\");\n\nconst j = items[0].json;         // 🔥 PRESERVE all fields\nconst rows = j.__rows;\nconst schema = j.__schema;\n\n// 1. MISSINGNESS\nconst missingness = {};\nfor (const c of Object.keys(schema)) {\n  missingness[c] = rows.filter(r => r[c] === '' || r[c] == null).length / rows.length;\n}\n\n// 2. NUMERIC STATS + CORR\nconst numericCols = Object.keys(schema).filter(c => schema[c] === 'numeric');\nconst statsMap = {};\nconst corr = {};\n\nfor (const c of numericCols)\n  statsMap[c] = stats(rows.map(r => r[c]));\n\nfor (const a of numericCols){\n  corr[a] = {};\n  for (const b of numericCols)\n    corr[a][b] = pearson(rows.map(r => r[a]), rows.map(r => r[b]));\n}\n\n// 🔥 MERGE WITH EXISTING JSON (critical fix)\nreturn [{\n  json: {\n    ...j,\n    eda: { missingness, stats: statsMap, corr }\n  }\n}];\n\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1024,
+        288
+      ],
+      "id": "bf584159-a65d-444f-9e6c-bdf1b89786d7",
+      "name": "Agent: EDA"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Loop over input items and add a new field called 'myNewField' to the JSON of each one\n// Feature Importance Agent (auto-detect target, robust to any CSV)\n// - Prefers common target names if present (e.g., Weekly_Sales, Sales, Close, ...)\n// - Otherwise picks the numeric column with LOWEST missingness (tie-break: highest variance)\n\nfunction pearson(x,y){\n  const a=[],b=[];\n  for (let i=0;i<x.length;i++){\n    const xv=x[i], yv=y[i];\n    if (xv!=null && yv!=null){ a.push(xv); b.push(yv); }\n  }\n  const n=a.length; if (n<3) return 0;\n  const mx=a.reduce((s,v)=>s+v,0)/n, my=b.reduce((s,v)=>s+v,0)/n;\n  let num=0, dx=0, dy=0;\n  for (let i=0;i<n;i++){ const xd=a[i]-mx, yd=b[i]-my; num+=xd*yd; dx+=xd*xd; dy+=yd*yd; }\n  return Math.abs(num/Math.sqrt(dx*dy) || 0);\n}\n\nfunction anovaF(y, groups){\n  const all = y.filter(v=>v!=null);\n  const n = all.length; if (n<3) return 0;\n  const overall = all.reduce((s,v)=>s+v,0)/n;\n  let ssb=0, ssw=0, k=0, t=0;\n  for (const [g,arr] of Object.entries(groups)){\n    const a = arr.filter(v=>v!=null);\n    if (a.length<2) continue;\n    k++;\n    const m = a.reduce((s,v)=>s+v,0)/a.length;\n    ssb += a.length * (m - overall) ** 2;\n    for (const v of a) ssw += (v - m) ** 2;\n    t += a.length;\n  }\n  if (k<2 || t<=k) return 0;\n  const F = (ssb/(k-1)) / ((ssw)/(t-k));\n  // squash to [0,1] and stay comparable to Pearson magnitudes\n  return Math.atan(F) / 1.57;\n}\n\nif (!items || !items.length) throw new Error(\"Feature Importance: no input from EDA.\");\n\nconst rows   = items[0].json.__rows;\nconst schema = items[0].json.__schema;\nconst eda    = items[0].json.eda;\n\nconst numericCols = Object.keys(schema).filter(c => schema[c] === 'numeric');\nif (numericCols.length === 0) {\n  return [{ json: { ...items[0].json, featureImportance: [], chosenTarget: null, note: \"No numeric columns available for target.\" } }];\n}\n\n// 1) Choose target column\nconst candidates = [\n  'Weekly_Sales','Sales','Target','y','label',\n  'Close','Adj Close','cnt','count',\n  'Average_TemperatureC','Mean_TemperatureC','AvgTemp','Temperature','Temp'\n].map(s => s.toLowerCase());\n\nfunction colMissingRate(col){\n  const m = eda?.missingness?.[col];\n  if (typeof m === 'number') return m;\n  // fallback compute\n  let miss=0;\n  for (const r of rows) if (r[col]==='' || r[col]==null) miss++;\n  return miss / rows.length;\n}\nfunction colVariance(col){\n  const v = rows.map(r=>r[col]).filter(v=>v!=null);\n  if (v.length<2) return 0;\n  const mean = v.reduce((s,x)=>s+x,0)/v.length;\n  return v.reduce((s,x)=>s+(x-mean)**2,0)/(v.length-1);\n}\n\n// priority by name\nlet target = null;\nfor (const c of numericCols) {\n  if (candidates.includes(c.toLowerCase())) { target = c; break; }\n}\n// otherwise: pick numeric with lowest missingness, tie-break highest variance\nif (!target) {\n  numericCols.sort((a,b)=>{\n    const ma = colMissingRate(a), mb = colMissingRate(b);\n    if (ma !== mb) return ma - mb;          // prefer fewer missing\n    return colVariance(b) - colVariance(a); // then higher variance\n  });\n  target = numericCols[0];\n}\n\nconst y = rows.map(r => r[target]);\n\n// 2) Score features\nconst scores = [];\nfor (const f of Object.keys(schema)) {\n  if (f === target) continue;\n  const t = schema[f];\n  const miss = eda?.missingness?.[f] ?? colMissingRate(f);\n  let s = 0;\n  if (t === 'numeric') {\n    s = pearson(rows.map(r=>r[f]), y);\n  } else if (t === 'categorical') {\n    const g = {};\n    for (const r of rows) {\n      const key = r[f];\n      if (key != null) {\n        if (!g[key]) g[key]=[];\n        g[key].push(r[target]);\n      }\n    }\n    s = anovaF(y, g);\n  } else {\n    // dates or unknown types → skip / zero score\n    s = 0;\n  }\n  scores.push({ feature: f, type: t, missRate: miss, score: s * (1 - miss) });\n}\n\n// 3) Normalize and sort\nconst maxScore = Math.max(...scores.map(s=>s.score), 0.0001);\nfor (const s of scores) s.norm = s.score / maxScore;\nscores.sort((a,b)=> b.norm - a.norm);\n\n// 4) Return\nreturn [{ json: { ...items[0].json, featureImportance: scores, chosenTarget: target } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        288
+      ],
+      "id": "d97af877-add1-474b-b422-51ee9d38e3e8",
+      "name": "Agent: Feature Importance"
+    },
+    {
+      "parameters": {
+        "jsCode": "function mdTable(rows){\n  if (!rows || !rows.length) return '_None_';\n  const keys = Object.keys(rows[0]);\n  const header = '| ' + keys.join(' | ') + ' |';\n  const sep    = '|' + keys.map(() => '---').join('|') + '|';\n  const body   = rows\n    .map(r => '| ' + keys.map(k => String(r[k] ?? '')).join(' | ') + ' |')\n    .join('\\n');\n  return header + '\\n' + sep + '\\n' + body;\n}\n\nif (!items || !items.length) {\n  throw new Error('Report Builder: no input.');\n}\n\nconst j    = items[0].json;\nconst eda  = j.eda || {};\nconst log  = j.__cleaningLog || [];\nconst fi   = j.featureImportance || [];\nconst tgt  = j.chosenTarget || '(auto)';\nconst ctrl = j.__controller || {\n  plan: [],\n  enabled: {},\n  timestamp: 'N/A',\n  numericColumns: [],\n  totalColumns: 'N/A'\n};\n\n// Optional: before/after cleaning summaries from Cleaning Agent v2\nconst before = j.__cleaningBefore || {};\nconst after  = j.__cleaningAfter  || {};\n\n// Build before/after rows per numeric column\nconst beforeAfterRows = Object.keys(before).map(col => {\n  const b = before[col] || {};\n  const a = after[col]  || {};\n  return {\n    Column: col,\n    Min_before: b.min ?? '',\n    Max_before: b.max ?? '',\n    Median_before: b.median ?? '',\n    Min_after: a.min ?? '',\n    Max_after: a.max ?? '',\n    Median_after: a.median ?? '',\n  };\n});\n\n// top 10 missingness\nconst missRows = Object.entries(eda.missingness || {})\n  .sort((a,b) => b[1] - a[1])\n  .slice(0,10)\n  .map(([col, m]) => ({ Column: col, Missing: (100*m).toFixed(1) + '%' }));\n\n// top 10 feature importance\nconst fiRows = fi.slice(0,10).map(x => ({\n  Feature:    x.feature,\n  Type:       x.type,\n  Importance: (x.norm ?? x.score ?? 0).toFixed(3),\n  Missing:    (100*(x.missRate ?? 0)).toFixed(1) + '%'\n}));\n\nconst enabledRows = Object.entries(ctrl.enabled || {}).map(([k,v]) => ({\n  Component: k,\n  Enabled: v ? 'yes' : 'no'\n}));\n\nconst planList = (ctrl.plan || []).map((step, i) => (i+1) + '. ' + step).join('\\n');\n\n// Try to compute row count robustly\nconst rowCount =\n  (Array.isArray(j.__rows) && j.__rows.length) ||\n  (j.llmPayload && j.llmPayload.rowCount) ||\n  'N/A';\n\nlet md = '';\n\nmd += '# Data Insights Report\\n\\n';\n\nmd += '## 1. Target & High-Level Summary\\n';\nmd += '- Chosen target: **' + tgt + '**\\n';\nmd += '- Rows analyzed: **' + rowCount + '**\\n\\n';\n\nmd += '## 2. Controller Agent: Execution Plan\\n';\nmd += '- Timestamp: ' + (ctrl.timestamp || 'N/A') + '\\n';\nmd += '- Numeric columns seen: **' + (ctrl.numericColumns || []).length + '**\\n';\nmd += '- Total columns: **' + (ctrl.totalColumns ?? 'N/A') + '**\\n\\n';\n\nmd += '### 2.1 Enabled Components\\n';\nmd += enabledRows.length ? mdTable(enabledRows) : '_No controller flags recorded._';\nmd += '\\n\\n';\n\nmd += '### 2.2 Planned Steps\\n';\nmd += planList || '_No plan recorded by controller._';\nmd += '\\n\\n';\n\n// --------------------\n// NEW: Rich cleaning section\n// --------------------\nmd += '## 3. Cleaning Summary\\n';\n\n// 3.1 Operations log\nmd += '### 3.1 Operations Log\\n';\nmd += log.length ? mdTable(log) : '_No cleaning operations logged._';\nmd += '\\n\\n';\n\n// 3.2 Numeric before/after (if available)\nmd += '### 3.2 Numeric Before/After (Per Column)\\n';\nmd += beforeAfterRows.length ? mdTable(beforeAfterRows) : '_No numeric before/after statistics recorded._';\nmd += '\\n\\n';\n\n// Missingness\nmd += '## 4. Missingness (Top 10 Columns)\\n';\nmd += missRows.length ? mdTable(missRows) : '_No missing data detected._';\nmd += '\\n\\n';\n\n// Feature importance\nmd += '## 5. Feature Importance (Top 10)\\n';\nmd += fiRows.length ? mdTable(fiRows) : '_No feature importance scores computed._';\nmd += '\\n\\n';\n\n// Narrative insights\nmd += '## 6. Narrative Insights\\n\\n';\n\n// Here we assume j.insights already contains Markdown from the LLM\nconst rawInsights = j.insights || '';\nif (rawInsights && rawInsights.trim()) {\n  md += rawInsights.trim() + '\\n';\n} else {\n  md += '_No narrative insights generated._\\n';\n}\n\nreturn [{ json: { ...j, reportMarkdown: md } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1712,
+        592
+      ],
+      "id": "5c2ae014-0002-4a09-82fd-951af37c3729",
+      "name": "Agent: Report Builder"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Loop over input items and add a new field called 'myNewField' to the JSON of each one\n// Turn the markdown report into a binary file for writing to disk\n\nconst text = $json.reportMarkdown || '';\n\n// Encode as base64 so n8n can treat it as a file\nconst base64 = Buffer.from(text, 'utf8').toString('base64');\n\nreturn [{\n  json: {},                        // we don't need any JSON here\n  binary: {\n    data: {\n      data: base64,                // base64-encoded content\n      fileName: 'insights_report.md',\n      mimeType: 'text/markdown'\n    }\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        640
+      ],
+      "id": "f4a3e25d-faa3-4feb-97e1-ccef07738c12",
+      "name": "Make Markdown Binary"
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "/home/n8n/agentic-insights/outputs/insights_report.md",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        2144,
+        640
+      ],
+      "id": "c8bea5a4-9fe2-450a-9fb0-7dda0ac3d80e",
+      "name": "Write Insights Report"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Loop over input items and add a new field called 'myNewField' to the JSON of each one\n// Turn the EDA object into a JSON file as binary\n\nconst eda = $json.eda || {};\nconst text = JSON.stringify(eda, null, 2);\n\n// Encode as base64 for n8n binary file\nconst base64 = Buffer.from(text, 'utf8').toString('base64');\n\nreturn [{\n  json: {},   // no JSON needed downstream\n  binary: {\n    data: {\n      data: base64,\n      fileName: 'eda_summary.json',\n      mimeType: 'application/json'\n    }\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        464
+      ],
+      "id": "24dfed09-5d87-4a0a-84ca-aec204106388",
+      "name": "Make EDA JSON Binary"
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "/home/n8n/agentic-insights/outputs/eda_summary.json",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        2144,
+        464
+      ],
+      "id": "cd872a6f-6d64-4c12-9896-0a81b6c412b8",
+      "name": "Write EDA JSON"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Loop over input items and add a new field called 'myNewField' to the JSON of each one\n// Build a cleaned CSV from the cleaned rows and expose it as binary: data\n\nif (!items || !items.length) {\n  throw new Error(\"Cleaned CSV: no input from Data Cleaning.\");\n}\n\nconst rows = items[0].json.__rows || [];\nif (!rows.length) {\n  throw new Error(\"Cleaned CSV: __rows is empty.\");\n}\n\n// Get header from first row\nconst headers = Object.keys(rows[0]);\n\n// CSV escaping\nfunction esc(v) {\n  if (v === null || v === undefined) return '';\n  const s = String(v);\n  // wrap in quotes if it contains comma, quote, or newline\n  if (/[\",\\n]/.test(s)) {\n    return '\"' + s.replace(/\"/g, '\"\"') + '\"';\n  }\n  return s;\n}\n\n// Build CSV text\nconst lines = [];\nlines.push(headers.join(','));  // header row\nfor (const r of rows) {\n  const line = headers.map(h => esc(r[h])).join(',');\n  lines.push(line);\n}\nconst csvText = lines.join('\\n');\n\n// Encode to base64 for n8n binary\nconst base64 = Buffer.from(csvText, 'utf8').toString('base64');\n\nreturn [{\n  json: {},  // we only care about binary for this branch\n  binary: {\n    data: {\n      data: base64,\n      fileName: 'cleaned_walmart.csv',\n      mimeType: 'text/csv'\n    }\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        480
+      ],
+      "id": "7ab63755-32d7-48c3-910b-3632e9ff7da8",
+      "name": "Make Cleaned CSV Binary"
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "/home/n8n/agentic-insights/outputs/cleaned_data.csv",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        1264,
+        480
+      ],
+      "id": "8fb39e93-c495-4f79-a89f-79be0576c143",
+      "name": "Write Cleaned CSV"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        96,
+        288
+      ],
+      "id": "b638336e-1525-4dae-b3cb-f75e0dfdddb5",
+      "name": "Parse CSV to JSON"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Loop over input items and add a new field called 'myNewField' to the JSON of each one\n// Controller: Orchestrator\n// Reads the inferred schema and records an execution plan for all downstream agents.\n\nif (!items || !items.length) {\n  throw new Error(\"Controller: no input from Schema Detector.\");\n}\n\nconst j = items[0].json;\nconst schema = j.__schema || {};\nconst numericCols = Object.keys(schema).filter(c => schema[c] === 'numeric');\n\nconst plan = [\n  \"Ingest raw CSV\",\n  \"Infer schema (types + normalization)\",\n  \"Clean data (impute + standardize)\",\n  \"Run EDA (stats + correlations)\",\n  numericCols.length >= 2\n    ? \"Compute feature importance (sufficient numeric features)\"\n    : \"Skip feature importance (not enough numeric features)\",\n  \"Generate narrative insights\",\n  \"Build markdown report + exports (EDA JSON, cleaned CSV)\"\n];\n\nconst enabled = {\n  cleaning: true,\n  eda: true,\n  featureImportance: numericCols.length >= 2,\n  reporting: true\n};\n\nconst controller = {\n  timestamp: new Date().toISOString(),\n  numericColumns: numericCols,\n  totalColumns: Object.keys(schema).length,\n  plan,\n  enabled\n};\n\nreturn [{\n  json: {\n    ...j,\n    __controller: controller\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        544,
+        288
+      ],
+      "id": "12594574-e43d-4ec0-9882-51725cffe0f4",
+      "name": "Controller: Orchestrator"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "llama-3.3-70b-versatile",
+          "mode": "id"
+        },
+        "responses": {
+          "values": [
+            {
+              "content": "=You are a senior educational data analyst.\n\nBelow is a JSON summary of a students performance dataset,\nincluding schema, missingness, basic statistics, correlations,\nfeature importance, and a small sample of rows.\n\nUse it to produce:\n\n- 6–10 clear, data-driven insights\n- factors most correlated with high and low scores\n- disparities by gender, race/ethnicity, lunch, etc.\n- comments on data quality issues\n- 5 actionable recommendations for teachers, parents, and policy makers\n\nHere is the summary JSON:\n\n{{ JSON.stringify($json.llmPayload) }}\n\n"
+            },
+            {
+              "role": "system",
+              "content": "You are a senior educational data analyst. You analyze student performance datasets and generate insights that are useful to educators, schools, and policymakers. Focus on relationships between demographics, parental education, preparation habits, and test performance.\nWrite clear, evidence-based insights in markdown.\n"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "include": [],
+          "store": false
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2,
+      "position": [
+        1488,
+        -176
+      ],
+      "id": "da5c49ab-e6e5-4c08-885d-b68226db46f7",
+      "name": "Message a model",
+      "credentials": {
+        "openAiApi": {
+          "id": "RIBkTbkhFRJLZnNu",
+          "name": "Groq (OpenAI compatible)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize LLM output and MERGE it with the original analytics JSON\n// This version uses $items('Build LLM Summary') to fetch the upstream data.\n\n// 1) Get the original analytics payload from the \"Build LLM Summary\" node\n//    IMPORTANT: replace 'Build LLM Summary' with the exact name of that node in your workflow.\nconst baseItems = $items('Build LLM Summary');\n\n// We expect exactly one summary item\nif (!baseItems || !baseItems.length) {\n  throw new Error('Normalize Insights: could not find items from \"Build LLM Summary\". Check the node name.');\n}\n\nconst base = baseItems[0].json;  // contains __rows, __schema, eda, featureImportance, llmPayload, etc.\n\n// 2) Get the LLM output from the current input (AI node)\nconst llmItems = $input.all();\nif (!llmItems || !llmItems.length) {\n  throw new Error('Normalize Insights: no LLM items received.');\n}\n\nconst llm = llmItems[0].json;\n\n// 3) Extract the text from Groq/OpenAI-like output structure\nconst text =\n  llm.output?.[0]?.content?.[0]?.text ??\n  llm.message?.content ??\n  llm.text ??\n  llm.result ??\n  JSON.stringify(llm);\n\n// 4) Return a SINGLE merged item:\n//    - all original analytics from \"Build LLM Summary\"\n//    - plus insights (LLM text)\n//    - plus rawLLM for debugging (optional)\nreturn [\n  {\n    json: {\n      ...base,\n      insights: text,\n      rawLLM: llm,\n    },\n  },\n];\n\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1712,
+        320
+      ],
+      "id": "1621c006-f7f7-4a2f-b3b7-33c6a274b1d5",
+      "name": "Normalize Insights"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build a compact summary for the LLM to avoid token limits\n\nif (!items || !items.length) {\n  throw new Error('Build LLM Summary: no input');\n}\n\nconst j = items[0].json;\n\nconst rows   = j.__rows || [];\nconst schema = j.__schema || {};\nconst eda    = j.eda || {};\nconst fi     = j.featureImportance || [];\nconst tgt    = j.chosenTarget || '(auto)';\n\n// top 10 missingness\nconst missingnessTop = Object.entries(eda.missingness || {})\n  .sort((a, b) => b[1] - a[1])\n  .slice(0, 10)\n  .map(([col, frac]) => ({\n    column: col,\n    missing_rate: frac\n  }));\n\n// top correlations (if your EDA stores them)\nconst correlationsTop = (eda.correlations || []).slice(0, 20);\n\n// top 15 feature importance rows\nconst featureImportanceTop = fi.slice(0, 15);\n\n// small row sample (optional, but capped)\nconst sampleRows = rows.slice(0, 50);  // <= keep this small\n\nconst summary = {\n  rowCount: rows.length,\n  columnCount: Object.keys(schema).length,\n  columns: Object.entries(schema).map(([name, type]) => ({ name, type })),\n  target: tgt,\n  missingnessTop,\n  stats: eda.stats || {},\n  correlationsTop,\n  featureImportanceTop,\n  sampleRows,\n};\n\nreturn [{\n  json: {\n    ...j,\n    llmPayload: summary,   // <- AI node will read this\n  },\n}];\nreturn [{\n  json: {\n    schema: j.__schema,\n    firstRow: j.__rows[0]\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        288
+      ],
+      "id": "5f68fac3-71b5-4b65-b871-02a996685862",
+      "name": "Build LLM Summary"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Schema Detector Agent for generic CSV (n8n: one item per row)\n\nif (!items || !items.length) {\n  throw new Error(\"SchemaDetector: No rows received.\");\n}\n\n// Here items is an array of rows, each in item.json\nconst rows = items.map(i => i.json);   // <-- use ALL items, not items[0].json\n\nif (!rows.length) {\n  throw new Error(\"SchemaDetector: CSV rows appear empty after mapping.\");\n}\n\n// Infer schema by sampling first 200 rows\nconst sample = rows.slice(0, 200);\n\nfunction inferType(values) {\n  let numeric = 0, categorical = 0;\n\n  for (const v of values) {\n    if (v === null || v === '') continue;\n\n    if (!isNaN(Number(v))) numeric++;\n    else categorical++;\n  }\n\n  return numeric > categorical ? 'numeric' : 'categorical';\n}\n\nconst schema = {};\nconst cols = Object.keys(sample[0] || {});\n\nfor (const col of cols) {\n  const columnValues = sample.map(r => r[col]);\n  schema[col] = inferType(columnValues);\n}\n\n// Output a SINGLE item that has all rows + schema\nreturn [{\n  json: {\n    __rows: rows,\n    __schema: schema,\n  },\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        336,
+        288
+      ],
+      "id": "a18ccc00-f806-4ade-8bf5-4d4cc725f1fe",
+      "name": "Agent: Schema Detector"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://quickchart.io/chart/create",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"backgroundColor\": \"white\",\n  \"width\": 800,\n  \"height\": 600,\n  \"format\": \"png\",\n  \"version\": \"2\",\n  \"chart\": {\n    \"type\": \"bar\",\n    \"data\": {\n      \"labels\": [\n        \"gender\",\n        \"race_ethnicity\",\n        \"parental_education\",\n        \"lunch\",\n        \"test_preparation\",\n        \"math_score\",\n        \"reading_score\",\n        \"writing_score\"\n      ],\n      \"datasets\": [\n        {\n          \"label\": \"Missingness Count\",\n          \"backgroundColor\": \"#4e79a7\",\n          \"data\": [0, 0, 0, 0, 0, 0, 0, 0]\n        }\n      ]\n    },\n    \"options\": {\n      \"plugins\": {\n        \"title\": {\n          \"display\": true,\n          \"text\": \"Missing Values per Column\"\n        }\n      },\n      \"scales\": {\n        \"y\": { \"beginAtZero\": true }\n      }\n    }\n  }\n}\n\n\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2000,
+        192
+      ],
+      "id": "45a8d2ca-aa5c-43f9-b7f9-22c8259e8df0",
+      "name": "Missingness Chart"
+    },
+    {
+      "parameters": {
+        "url": "https://quickchart.io/chart/create",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"backgroundColor\": \"white\",\n  \"width\": 800,\n  \"height\": 600,\n  \"format\": \"png\",\n  \"version\": \"2\",\n  \"chart\": {\n    \"type\": \"boxplot\",\n    \"data\": {\n      \"labels\": [\"Math\", \"Reading\", \"Writing\"],\n      \"datasets\": [\n        {\n          \"label\": \"Score Distribution\",\n          \"backgroundColor\": \"#f28e2b\",\n          \"borderColor\": \"#d14e0c\",\n          \"data\": [\n            { \"min\": 0, \"q1\": 28, \"median\": 53, \"q3\": 7572, \"max\": 7572 },\n            { \"min\": 0, \"q1\": 26, \"median\": 51, \"q3\": 7475, \"max\": 7475 },\n            { \"min\": 0, \"q1\": 26, \"median\": 54, \"q3\": 7778, \"max\": 7778 }\n          ]\n        }\n      ]\n    },\n    \"options\": {\n      \"plugins\": {\n        \"title\": {\n          \"display\": true,\n          \"text\": \"Score Distribution (Boxplot)\"\n        }\n      }\n    }\n  }\n}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2000,
+        16
+      ],
+      "id": "1ac16e80-e669-4f05-87a9-52414cb99ece",
+      "name": "SCORE DISTRIBUTION"
+    },
+    {
+      "parameters": {
+        "url": "https://quickchart.io/chart/create",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"backgroundColor\": \"white\",\n  \"width\": 800,\n  \"height\": 600,\n  \"format\": \"png\",\n  \"version\": \"2\",\n  \"chart\": {\n    \"type\": \"bar\",\n    \"data\": {\n      \"labels\": [\n        \"gender\",\n        \"race_ethnicity\",\n        \"parental_education\",\n        \"lunch\",\n        \"test_preparation\",\n        \"reading_score\",\n        \"writing_score\"\n      ],\n      \"datasets\": [\n        {\n          \"label\": \"Feature Importance Score\",\n          \"backgroundColor\": \"#59a14f\",\n          \"data\": [0, 0, 0, 0, 0, 0, 0]\n        }\n      ]\n    },\n    \"options\": {\n      \"plugins\": {\n        \"title\": {\n          \"display\": true,\n          \"text\": \"Feature Importance\"\n        }\n      },\n      \"scales\": {\n        \"y\": { \"beginAtZero\": true }\n      }\n    }\n  }\n}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2000,
+        -176
+      ],
+      "id": "4a9cd1ce-7e33-4763-b1ec-a3b7ab157a82",
+      "name": "FEATURE IMPORTANCE CHART"
+    },
+    {
+      "parameters": {
+        "url": "https://quickchart.io/chart/create",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"backgroundColor\": \"white\",\n  \"width\": 800,\n  \"height\": 600,\n  \"format\": \"png\",\n  \"version\": \"2\",\n  \"chart\": {\n    \"type\": \"matrix\",\n    \"data\": {\n      \"labels\": [\"Math\", \"Reading\", \"Writing\"],\n      \"datasets\": [\n        {\n          \"label\": \"Correlation Heatmap\",\n          \"data\": [\n            { \"x\": 0, \"y\": 0, \"v\": 0 },\n            { \"x\": 1, \"y\": 0, \"v\": 0 },\n            { \"x\": 2, \"y\": 0, \"v\": 0 },\n\n            { \"x\": 0, \"y\": 1, \"v\": 0 },\n            { \"x\": 1, \"y\": 1, \"v\": 0 },\n            { \"x\": 2, \"y\": 1, \"v\": 0 },\n\n            { \"x\": 0, \"y\": 2, \"v\": 0 },\n            { \"x\": 1, \"y\": 2, \"v\": 0 },\n            { \"x\": 2, \"y\": 2, \"v\": 0 }\n          ],\n          \"backgroundColor\": \"rgba(78, 121, 167, 0.8)\"\n        }\n      ]\n    },\n    \"options\": {\n      \"plugins\": {\n        \"title\": {\n          \"display\": true,\n          \"text\": \"Correlation Heatmap (Math vs Reading vs Writing)\"\n        }\n      },\n      \"scales\": {\n        \"x\": { \"type\": \"category\", \"labels\": [\"Math\", \"Reading\", \"Writing\"] },\n        \"y\": { \"type\": \"category\", \"labels\": [\"Math\", \"Reading\", \"Writing\"] }\n      }\n    }\n  }\n}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2000,
+        -384
+      ],
+      "id": "46e27810-f5f3-4a2b-a489-e717202c5db3",
+      "name": "CORRELATION HEATMAP"
+    },
+    {
+      "parameters": {
+        "url": "https://quickchart.io/chart/create",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"backgroundColor\": \"white\",\n  \"width\": 800,\n  \"height\": 600,\n  \"format\": \"png\",\n  \"version\": \"2\",\n  \"chart\": {\n    \"type\": \"scatter\",\n    \"data\": {\n      \"datasets\": [\n        {\n          \"label\": \"Math Outliers\",\n          \"backgroundColor\": \"#4e79a7\",\n          \"data\": [\n            { \"x\": 1, \"y\": 0 },\n            { \"x\": 1, \"y\": 7572 }\n          ]\n        },\n        {\n          \"label\": \"Reading Outliers\",\n          \"backgroundColor\": \"#f28e2b\",\n          \"data\": [\n            { \"x\": 2, \"y\": 0 },\n            { \"x\": 2, \"y\": 7475 }\n          ]\n        },\n        {\n          \"label\": \"Writing Outliers\",\n          \"backgroundColor\": \"#e15759\",\n          \"data\": [\n            { \"x\": 3, \"y\": 0 },\n            { \"x\": 3, \"y\": 7778 }\n          ]\n        }\n      ]\n    },\n    \"options\": {\n      \"plugins\": {\n        \"title\": {\n          \"display\": true,\n          \"text\": \"Outlier Plot (Min/Max Scores)\"\n        }\n      },\n      \"scales\": {\n        \"x\": {\n          \"type\": \"linear\",\n          \"ticks\": {\n            \"callback\": \"function(value){ return ['','Math','Reading','Writing'][value]; }\",\n            \"stepSize\": 1\n          },\n          \"min\": 0,\n          \"max\": 4\n        },\n        \"y\": { \"beginAtZero\": true }\n      }\n    }\n  }\n}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        2000,
+        -560
+      ],
+      "id": "c9d72ff5-9668-4d80-81f9-1441a15e09e9",
+      "name": "OUTLIER PLOT (MIN & MAX VALUES)"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Raw CSV (Binary)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Raw CSV (Binary)": {
+      "main": [
+        [
+          {
+            "node": "Parse CSV to JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent: Data Cleaning": {
+      "main": [
+        [
+          {
+            "node": "Make Cleaned CSV Binary",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Agent: EDA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent: EDA": {
+      "main": [
+        [
+          {
+            "node": "Agent: Feature Importance",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent: Feature Importance": {
+      "main": [
+        [
+          {
+            "node": "Build LLM Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent: Report Builder": {
+      "main": [
+        [
+          {
+            "node": "Make Markdown Binary",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Make EDA JSON Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Make Markdown Binary": {
+      "main": [
+        [
+          {
+            "node": "Write Insights Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Make EDA JSON Binary": {
+      "main": [
+        [
+          {
+            "node": "Write EDA JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Make Cleaned CSV Binary": {
+      "main": [
+        [
+          {
+            "node": "Write Cleaned CSV",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse CSV to JSON": {
+      "main": [
+        [
+          {
+            "node": "Agent: Schema Detector",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Controller: Orchestrator": {
+      "main": [
+        [
+          {
+            "node": "Agent: Data Cleaning",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model": {
+      "main": [
+        [
+          {
+            "node": "Normalize Insights",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Insights": {
+      "main": [
+        [
+          {
+            "node": "Missingness Chart",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Agent: Report Builder",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "SCORE DISTRIBUTION",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "FEATURE IMPORTANCE CHART",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "CORRELATION HEATMAP",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "OUTLIER PLOT (MIN & MAX VALUES)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build LLM Summary": {
+      "main": [
+        [
+          {
+            "node": "Message a model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent: Schema Detector": {
+      "main": [
+        [
+          {
+            "node": "Controller: Orchestrator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Missingness Chart": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "251152d0-6840-4e95-a427-d01b963577cc",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "571c15316b390021325de21488e8ce356637cd6480beda8534ba3d228250782c"
+  },
+  "id": "S5pit19T3W3ckBkE",
+  "tags": []
+}
