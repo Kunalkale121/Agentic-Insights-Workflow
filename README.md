@@ -225,6 +225,20 @@ requests
 
 ---
 
+Fallback Strategies Implemented in the Workflow
+
+Multi-Field LLM Response Fallback
+The workflow uses a tiered extraction strategy in the Insights Normalization Agent. If the LLM’s output is not found in the expected field (message.content), the system automatically checks several alternative fields (message, result, response, content) and ultimately falls back to converting the entire JSON into a readable string. This ensures the workflow continues functioning even when the LLM changes its response structure.
+
+Robust Data Cleaning Fallbacks
+The Cleaning Agent incorporates built-in fallback rules that guarantee successful preprocessing regardless of data variability. Numeric columns fall back to median imputation, categorical columns default to mode imputation, and outlier handling gracefully skips capping when insufficient data is present. These strategies ensure consistent cleaning without workflow interruption.
+
+Safe Missingness & EDA Fallback Computation
+The EDA Agent includes fallback logic that prevents failures when encountering empty or irregular columns. Missingness is safely computed by defaulting to zero when no missing values are detected, and statistical summaries return null or safe defaults when data is insufficient—ensuring the report always remains complete and interpretable.
+
+Report Builder Auto-Fallback Messaging
+To maintain report integrity, the Report Builder automatically inserts human-readable fallback messages (e.g., “No cleaning operations logged”, “No missing data detected”, “No feature importance scores computed”) whenever a section has no available data. This guarantees that the final report is always comprehensive, clear, and non-expert friendly—even when upstream agents produce minimal outputs.
+
 # 🧪 Evaluation Report Summary
 
 ### Accuracy  
